@@ -13,6 +13,7 @@ import (
 
 type (
 	Expr struct {
+		hash  Hash
 		name  Name
 		sub   Repl
 		left  *Expr
@@ -20,7 +21,36 @@ type (
 	}
 	Name string
 	Repl int
+	Hash uint64
 )
+
+// Hasher
+// => Doesn't throw compiler errors if not implemented!
+
+func (expr Expr) Hashcode() uint64 {
+	return uint64(expr.hash)
+}
+
+func (expr1 Expr) Equals(other interface{}) bool {
+	if expr2, ok := other.(Expr); ok { // assert(other: Expr)
+		if expr2.left != nil { // && expr2.right != nil {
+			// User Equals() to descend tree pointers
+			// FIXME something going mad...
+			return expr1.name == expr2.name && expr1.left.Equals(expr2.left) && expr1.right.Equals(expr2.right)
+		} else {
+			return expr1.name == expr2.name && expr1.sub == expr2.sub
+		}
+	} else {
+		return false
+	}
+}
+
+func (name Name) Hashcode() (hash uint64) {
+	for i, c := range name {
+		hash += uint64(c) * 2 << uint64(i)
+	}
+	return
+}
 
 // Display
 
@@ -66,21 +96,23 @@ func (parser *Parser) readWhile(test func(byte) bool) string {
 	return buffer.String()
 }
 
-func (parser *Parser) readName() string {
-	return parser.readWhile(isLetter)
+func (parser *Parser) readName() Name {
+	return Name(parser.readWhile(isLetter))
 }
 
-func (parser *Parser) readVar(name string) *Expr {
-	return &Expr{name: Name(name)}
+func (parser *Parser) readVar(name Name) *Expr {
+	hash := name.Hashcode()
+	return &Expr{hash: Hash(hash), name: name}
 }
 
-func (parser *Parser) readApp(name string) *Expr {
+func (parser *Parser) readApp(name Name) *Expr {
 	parser.ReadByte() // '('
 	left := parser.readExpr()
 	parser.ReadByte() // ','
 	right := parser.readExpr()
 	parser.ReadByte() // ')'
-	return &Expr{name: Name(name), left: left, right: right}
+	hash := name.Hashcode() + left.Hashcode() + right.Hashcode()
+	return &Expr{hash: Hash(hash), name: name, left: left, right: right}
 }
 
 func (parser *Parser) readExpr() *Expr {
@@ -96,19 +128,19 @@ func (parser *Parser) readExpr() *Expr {
 // Elimination
 
 type State struct {
-	dict map[Expr]Repl // ERROR! uses equallity on pointers `left` and `right` in Expr!
+	dict *Map
 	num  Repl
 }
 
 func newState() *State {
-	return &State{dict: make(map[Expr]Repl), num: 1}
+	return &State{dict: NewMap(), num: 1}
 }
 
 func (expr *Expr) cseMut(state *State) {
-	if repl := state.dict[*expr]; repl != 0 {
-		*expr = Expr{sub: repl}
+	if repl, ok := state.dict.Get(*expr); ok {
+		*expr = Expr{sub: repl.(Repl)} // assert(state.dict: map[*Expr]Repl)
 	} else {
-		state.dict[*expr] = state.num
+		state.dict.Put(*expr, state.num)
 		state.num++
 		if expr.left != nil { // && expr.right != nil {
 			expr.left.cseMut(state)
@@ -118,17 +150,17 @@ func (expr *Expr) cseMut(state *State) {
 }
 
 func (expr *Expr) cse(state *State) *Expr {
-	if repl := state.dict[*expr]; repl != 0 {
-		return &Expr{sub: repl}
+	if repl, ok := state.dict.Get(*expr); ok {
+		return &Expr{sub: repl.(Repl)} // assert(state.dict: map[*Expr]Repl)
 	} else {
-		state.dict[*expr] = state.num
+		state.dict.Put(*expr, state.num)
 		state.num++
 		if expr.left != nil { // && expr.right != nil {
 			l := expr.left.cse(state)
 			r := expr.right.cse(state)
-			return &Expr{left: l, right: r, name: expr.name}
+			return &Expr{hash: expr.hash, left: l, right: r, name: expr.name}
 		} else {
-			return &Expr{name: expr.name}
+			return &Expr{hash: expr.hash, name: expr.name}
 		}
 	}
 }
@@ -144,7 +176,7 @@ func main() {
 		input, _ := stdin.ReadString('\n')
 		parser := newParser(input)
 		expr := parser.readExpr()
-		result := expr.cse(newState())
-		fmt.Println(result.display())
+		expr.cseMut(newState())
+		fmt.Println(expr.display())
 	}
 }
